@@ -19,28 +19,68 @@ const WorkflowSchema = z.object({
 type Workflow = z.infer<typeof WorkflowSchema>;
 type Step = z.infer<typeof WorkflowStep>;
 
-function resolveDAG(workflowSteps: Step[]) {
-  while (true) {
-    let filteredSteps = workflowSteps.filter((step) => !step.dependsOn);
-    console.log("NEW: ")
-    console.log(filteredSteps)
+async function resolveDAG(
+  workflowSteps: Step[],
+): Promise<{ result: string; id: string }[]> {
+  if (workflowSteps.length === 0) {
+    return [];
   }
+
+  const canResolveNodes = workflowSteps.filter(
+    (node) => !node.dependsOn || node.dependsOn.length === 0,
+  );
+
+  if (canResolveNodes.length === 0) {
+    throw new Error("DAG contains a cycle or unresolved dependencies");
+  }
+
+  const results = await Promise.all(
+    canResolveNodes.map((node) => runAgent(node.command)),
+  );
+
+  const resolvedIds = new Set(canResolveNodes.map((node) => node.id));
+
+  const remainingSteps = workflowSteps
+    .filter((node) => !resolvedIds.has(node.id))
+    .map((step) => ({
+      ...step,
+      dependsOn: step.dependsOn!.filter((id) => !resolvedIds.has(id)),
+    }));
+
+  const currentResults = results.map((r, index) => ({
+    result: r.result,
+    id: canResolveNodes[index]?.id!,
+  }));
+
+  const remainingResults = await resolveDAG(remainingSteps);
+
+  return [...currentResults, ...remainingResults];
 }
 
-app.post("/run-workflow", (req, res) => {
+function runAgent(command: string): Promise<{ result: string }> {
+  return new Promise((resolve) => {
+    console.log(`Agent ran for ${command}`);
+    resolve({
+      result: `Agent ran for ${command}`,
+    });
+  });
+}
+
+app.post("/run-workflow", async (req, res) => {
   const { success, data, error } = WorkflowSchema.safeParse(req.body);
 
   if (!success) {
     res.status(422).json({
       message: "Invalid input",
-      error: error
+      error: error,
     });
     return;
   }
 
-  console.log("OLD: ")
-  console.log(data.steps)
-  resolveDAG(data.steps);
+  await resolveDAG(data.steps);
+  return res.status(200).json({
+    message: "DAG resolved",
+  });
 });
 
 app.listen(3000);
